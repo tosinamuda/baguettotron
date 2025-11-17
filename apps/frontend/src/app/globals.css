@@ -1,0 +1,188 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --accent: #03f3ef;
+  --accent-soft: #19b5b0;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-noto-sans);
+  --font-jetbrains: var(--font-jetbrains-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    --accent: #03f3ef;
+    --accent-soft: #19b5b0;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-noto-sans), sans-serif;
+}
+
+.font-jetbrains {
+  font-family: var(--font-jetbrains-mono);
+  font-variant-ligatures: normal;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+/* Markdown code blocks in thinking section */
+.font-jetbrains code {
+  font-family: var(--font-jetbrains-mono);
+  font-variant-ligatures: normal;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+.font-jetbrains pre {
+  font-family: var(--font-jetbrains-mono);
+  font-variant-ligatures: normal;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+/* Thinking details summary styling */
+details summary {
+  list-style: none;
+  user-select: none;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details summary::marker {
+  display: none;
+}
+
+/* Animate details opening/closing */
+.thinking-details {
+  overflow: hidden;
+}
+
+.thinking-details[open] {
+  animation: slideDown 0.3s ease-in-out;
+}
+
+.thinking-details:not([open]) {
+  animation: slideUp 0.3s ease-in-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 125rem;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 1;
+    max-height: 125rem;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+  }
+}
+
+/* Response fade in after thinking closes */
+.response-fade-in {
+  animation: fadeIn 0.4s ease-in 0.3s both;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-0.625rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Streaming text reveal animation - left to right */
+@keyframes text-reveal {
+  from {
+    opacity: 0;
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.streaming-text {
+  animation: text-reveal 0.3s ease-out forwards;
+  display: inline-block;
+  will-change: clip-path, opacity;
+}
+
+/* Smooth fade in for completed content */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out forwards;
+}
+
+/* Reclassification transition - smooth move from thinking to response */
+@keyframes reclassify-slide {
+  from {
+    opacity: 0.7;
+    transform: translateY(-0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reclassify-transition {
+  animation: reclassify-slide 0.4s ease-out forwards;
+}
+
+/* Typing indicator delays */
+.delay-75 {
+  animation-delay: 75ms;
+}
+
+.delay-150 {
+  animation-delay: 150ms;
+}
+
+/* Toast animation */
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(1.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.3s ease-out;
+}

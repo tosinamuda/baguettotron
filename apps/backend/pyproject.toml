@@ -1,0 +1,30 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "transformers[torch]>=4.57.1",
+    "fastapi[standard]>=0.115.0",
+    "websockets>=13.0",
+    "safetensors>=0.4.0",
+    "sqlalchemy>=2.0.44",
+    "alembic>=1.17.1",
+    "aiosqlite>=0.21.0",
+    "greenlet>=3.0.3",
+    "sqlite-vec>=0.1.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+    "ruff>=0.14.5",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+# Ignore E402 (module level import not at top of file) in main.py due to sys.path manipulation
+per-file-ignores = { "app/main.py" = ["E402"] }
