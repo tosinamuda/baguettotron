@@ -1,19 +1,23 @@
-# Pleias Chat Interface
+# Chateau: Baguettotron & Monad Chat Interface
 
-An open-source chat interface for Pleias' new language models: **Monad** and **Baguettotron**.
+An open-source chat interface for Qwen-based Hugging Face models, starting with Pleias' **Monad** and **Baguettotron** (This work is not affiliated with Pleias)
+
+Built using the **Hugging Face Transformers library** to run models **locally on your CPU**—no API keys, no external services, complete privacy.
 
 Features a custom thinking trace parser that extracts and visualizes the model's internal reasoning process in beautiful, collapsible UI sections—making it easy to understand how these models arrive at their answers.
 
 ## What's Special
 
+- **Runs Locally on CPU**: Uses Hugging Face Transformers to run models entirely on your machine
 - **Custom Thinking Trace Parser**: Parses the model's reasoning into structured, readable sections that reveal its thought process
 - **Real-time Streaming**: WebSocket-based streaming for instant token-by-token responses
-- **Multi-Model Support**: Switch between Monad, Baguettotron, Llama 2, and Mistral
+- **Qwen-Compatible**: Works with any Qwen-based model from Hugging Face (Monad, Baguettotron, Qwen2.5, etc.)
 - **Conversation Management**: Persistent conversations with full history
+- **No API Keys Required**: Complete privacy, no data sent to external services
 
 ## Tech Stack
 
-**Backend**: FastAPI (Python) + WebSockets + Hugging Face Transformers + SQLite
+**Backend**: FastAPI (Python) + WebSockets + Hugging Face Transformers (local CPU inference) + SQLite
 **Frontend**: Next.js 16 + React 19 + Tailwind CSS + React Query + Zustand
 **Build**: Turborepo monorepo with npm workspaces
 
