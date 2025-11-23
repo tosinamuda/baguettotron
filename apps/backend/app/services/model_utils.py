@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List
 
 import torch
@@ -5,8 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
 
-from app.db.models import Client, Message, ModelConfig
-
+from ..db.models import Client, Message, ModelConfig
 
 # Global constants
 MAX_TOTAL_TOKENS = 8192
@@ -17,6 +17,18 @@ ConversationMessage = Dict[str, str]
 
 # Global model cache
 model_cache = {}
+
+
+def get_preferred_device() -> torch.device:
+    """Pick the best available torch device (cuda > mps > cpu)."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+
+    mps_is_available = getattr(torch.backends, "mps", None)
+    if mps_is_available and torch.backends.mps.is_available():
+        return torch.device("mps")
+
+    return torch.device("cpu")
 
 
 async def get_or_create_client(session: AsyncSession, fingerprint: str) -> Client:
@@ -141,13 +153,75 @@ def load_model(model_name: str = "PleIAs/Baguettotron"):
         print(f"\n{'=' * 60}")
         print(f"🔄 Loading model: {model_name}")
         print(f"{'=' * 60}")
+
+        device = get_preferred_device()
+
+        # Choose dtype: CUDA -> fp16, MPS -> fp32 by default (fp16 opt-in), CPU -> fp32
+        if device.type == "cuda":
+            dtype = torch.float16
+        elif device.type == "mps":
+            mps_fp16 = os.getenv("MPS_FP16", "0").lower() in ("1", "true", "yes", "y")
+            dtype = torch.float16 if mps_fp16 else torch.float32
+        else:
+            dtype = torch.float32
+
+        print(f"🖥️  Using device: {device} (dtype={dtype})")
+        if device.type == "mps":
+            print("🍎 Detected Apple Silicon (MPS backend)")
+        elif device.type == "cpu":
+            print("⚙️  No GPU/MPS detected, running on CPU")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
-        )
-        model_cache[model_name] = {"model": model, "tokenizer": tokenizer}
+
+        def _load(
+            target_device: torch.device,
+            target_dtype: torch.dtype,
+            use_device_map: bool = True,
+        ):
+            # Use device_map to place directly on accelerator; optional
+            device_map = (
+                {"": target_device}
+                if (use_device_map and target_device.type != "cpu")
+                else None
+            )
+            return AutoModelForCausalLM.from_pretrained(
+                model_name,
+                dtype=target_dtype,  # new HF arg
+                device_map=device_map,
+                low_cpu_mem_usage=False,  # avoid meta tensors
+            )
+
+        try:
+            model = _load(device, dtype, use_device_map=True)
+            if device.type == "cpu":
+                model.to(device)
+            load_device, load_dtype = device, dtype
+        except RuntimeError as err:
+            print(f"⚠️  Failed to load model on {device}: {err}")
+            if device.type == "mps":
+                # Retry without device_map (load on CPU then move) to avoid meta issues
+                try:
+                    print("↩️  Retrying MPS load without device_map...")
+                    model = _load(device, dtype, use_device_map=False)
+                    model.to(device)
+                    load_device, load_dtype = device, dtype
+                except RuntimeError as err2:
+                    print(f"⚠️  MPS retry failed: {err2}")
+                    print("↩️  Falling back to CPU with float32")
+                    load_device = torch.device("cpu")
+                    load_dtype = torch.float32
+                    model = _load(load_device, load_dtype, use_device_map=False)
+            else:
+                print("↩️  Falling back to CPU with float32")
+                load_device = torch.device("cpu")
+                load_dtype = torch.float32
+                model = _load(load_device, load_dtype, use_device_map=False)
+
+        model_cache[model_name] = {
+            "model": model,
+            "tokenizer": tokenizer,
+            "device": load_device,
+            "dtype": load_dtype,
+        }
         print(f"✅ Model {model_name} loaded successfully!")
         print(f"{'=' * 60}\n")
     else:
@@ -291,6 +365,82 @@ def format_prompt(
     prompt = "\n".join(segments)
 
     print("\n📝 PROMPT SENT TO MODEL:")
+    print(f"{'─' * 80}")
+    print(prompt)
+    print(f"{'─' * 80}\n")
+
+    return prompt
+
+
+def format_prompt_with_rag(
+    conversation_history: List[ConversationMessage],
+    thinking_mode: bool,
+    system_prompt: str | None,
+    formatted_sources: str,
+    current_user_message: str,
+) -> str:
+    """
+    Construct prompt with RAG sources embedded in user message.
+
+    Args:
+        conversation_history: Previous messages (without current message)
+        thinking_mode: Whether to enable thinking mode
+        system_prompt: System prompt text
+        formatted_sources: XML-formatted source chunks
+        current_user_message: Current user query
+
+    Returns:
+        Complete prompt string with sources embedded
+
+    Format:
+        <|im_start|>system
+        {system_prompt}<|im_end|>
+        [... conversation history ...]
+        <|im_start|>user
+        {current_user_message}
+        {formatted_sources}<|im_end|>
+        <|im_start|>assistant
+        {<think> or </think> based on thinking_mode}
+    """
+    print(f"\n{'=' * 80}")
+    print("🔍 RAG: format_prompt_with_rag() FUNCTION EXECUTION")
+    print(f"{'=' * 80}")
+    print("📥 Input parameters:")
+    print(f"  - thinking_mode: {thinking_mode} (type: {type(thinking_mode).__name__})")
+    print(
+        f"  - system_prompt: {'Present' if system_prompt else 'None'} ({len(system_prompt) if system_prompt else 0} chars)"
+    )
+    print(f"  - conversation_history count: {len(conversation_history)}")
+    print(f"  - formatted_sources length: {len(formatted_sources)} chars")
+    print(f"  - current_user_message length: {len(current_user_message)} chars")
+
+    segments = []
+
+    # Prepend system message if provided
+    if system_prompt:
+        system_segment = f"<|im_start|>system\n{system_prompt}<|im_end|>"
+        segments.append(system_segment)
+        print("\n📋 System prompt segment added")
+
+    # Add conversation history (without current message)
+    for message in conversation_history:
+        formatted_msg = _format_message_segment(message)
+        segments.append(formatted_msg)
+
+    # Current user message with embedded sources
+    user_message_with_sources = f"{current_user_message}\n{formatted_sources}"
+    user_segment = f"<|im_start|>user\n{user_message_with_sources}<|im_end|>"
+    segments.append(user_segment)
+    print(f"\n📄 User message with RAG sources added ({len(user_segment)} chars)")
+
+    # Assistant prefix with thinking mode
+    assistant_prefix = "<|im_start|>assistant\n"
+    assistant_prefix += "<think>\n" if thinking_mode else "</think>\n"
+    segments.append(assistant_prefix)
+
+    prompt = "\n".join(segments)
+
+    print("\n📝 RAG PROMPT SENT TO MODEL:")
     print(f"{'─' * 80}")
     print(prompt)
     print(f"{'─' * 80}\n")

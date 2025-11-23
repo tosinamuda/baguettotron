@@ -1,0 +1,10 @@
+mlartifacts
+.pytest_cache
+__pycache__
+.env*
+!.env.example
+.DS_Store
+.ruff_cache
+.venv
+.turbo
+data

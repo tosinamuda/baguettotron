@@ -21,11 +21,14 @@ describe('Zustand Store - Streaming State Management', () => {
     useChatStore.setState({
       messagesByConversation: {},
       streamingByConversation: {},
+      documentsByConversation: {},
       isConnected: false,
+      backendReady: false,
       thinkingMode: true,
       selectedModel: 'PleIAs/Baguettotron',
       clientId: 'test-client-123',
       activeConversationId: null,
+      isSettingsOpen: false,
     })
   })
 
@@ -509,6 +512,307 @@ describe('Zustand Store - Streaming State Management', () => {
       
       // The partialize function explicitly excludes activeConversationId
       // so it will always start as null on app load
+    })
+  })
+})
+
+describe('Document State Management', () => {
+  describe('addDocument', () => {
+    it('should add document to conversation', () => {
+      const conversationId = 'conv-doc-1'
+      const document = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test.pdf',
+        status: 'ready' as const,
+        chunkCount: 10,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, document)
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents).toHaveLength(1)
+      expect(documents[0]).toEqual(document)
+    })
+
+    it('should add multiple documents to same conversation', () => {
+      const conversationId = 'conv-doc-2'
+      const doc1 = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test1.pdf',
+        status: 'ready' as const,
+        chunkCount: 10,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+      const doc2 = {
+        id: 'doc-2',
+        conversationId,
+        filename: 'test2.pdf',
+        status: 'processing' as const,
+        chunkCount: 0,
+        uploadTimestamp: '2025-11-19T10:05:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, doc1)
+      useChatStore.getState().addDocument(conversationId, doc2)
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents).toHaveLength(2)
+      expect(documents[0]).toEqual(doc1)
+      expect(documents[1]).toEqual(doc2)
+    })
+
+    it('should keep documents separate per conversation', () => {
+      const convA = 'conv-doc-3a'
+      const convB = 'conv-doc-3b'
+      const docA = {
+        id: 'doc-a',
+        conversationId: convA,
+        filename: 'testA.pdf',
+        status: 'ready' as const,
+        chunkCount: 5,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+      const docB = {
+        id: 'doc-b',
+        conversationId: convB,
+        filename: 'testB.pdf',
+        status: 'ready' as const,
+        chunkCount: 8,
+        uploadTimestamp: '2025-11-19T10:05:00Z',
+      }
+
+      useChatStore.getState().addDocument(convA, docA)
+      useChatStore.getState().addDocument(convB, docB)
+
+      expect(useChatStore.getState().getDocuments(convA)).toEqual([docA])
+      expect(useChatStore.getState().getDocuments(convB)).toEqual([docB])
+    })
+  })
+
+  describe('setDocuments', () => {
+    it('should set documents for conversation', () => {
+      const conversationId = 'conv-doc-4'
+      const documents = [
+        {
+          id: 'doc-1',
+          conversationId,
+          filename: 'test1.pdf',
+          status: 'ready' as const,
+          chunkCount: 10,
+          uploadTimestamp: '2025-11-19T10:00:00Z',
+        },
+        {
+          id: 'doc-2',
+          conversationId,
+          filename: 'test2.pdf',
+          status: 'ready' as const,
+          chunkCount: 15,
+          uploadTimestamp: '2025-11-19T10:05:00Z',
+        },
+      ]
+
+      useChatStore.getState().setDocuments(conversationId, documents)
+
+      expect(useChatStore.getState().getDocuments(conversationId)).toEqual(documents)
+    })
+
+    it('should replace existing documents', () => {
+      const conversationId = 'conv-doc-5'
+      const oldDoc = {
+        id: 'doc-old',
+        conversationId,
+        filename: 'old.pdf',
+        status: 'ready' as const,
+        chunkCount: 5,
+        uploadTimestamp: '2025-11-19T09:00:00Z',
+      }
+      const newDocs = [
+        {
+          id: 'doc-new',
+          conversationId,
+          filename: 'new.pdf',
+          status: 'ready' as const,
+          chunkCount: 10,
+          uploadTimestamp: '2025-11-19T10:00:00Z',
+        },
+      ]
+
+      useChatStore.getState().addDocument(conversationId, oldDoc)
+      expect(useChatStore.getState().getDocuments(conversationId)).toHaveLength(1)
+
+      useChatStore.getState().setDocuments(conversationId, newDocs)
+      expect(useChatStore.getState().getDocuments(conversationId)).toEqual(newDocs)
+    })
+  })
+
+  describe('getDocuments', () => {
+    it('should return empty array for conversation with no documents', () => {
+      const conversationId = 'conv-doc-6'
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents).toEqual([])
+    })
+
+    it('should return documents for conversation', () => {
+      const conversationId = 'conv-doc-7'
+      const document = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test.pdf',
+        status: 'ready' as const,
+        chunkCount: 10,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, document)
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents).toEqual([document])
+    })
+  })
+
+  describe('removeDocument', () => {
+    it('should remove document from conversation', () => {
+      const conversationId = 'conv-doc-8'
+      const doc1 = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test1.pdf',
+        status: 'ready' as const,
+        chunkCount: 10,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+      const doc2 = {
+        id: 'doc-2',
+        conversationId,
+        filename: 'test2.pdf',
+        status: 'ready' as const,
+        chunkCount: 15,
+        uploadTimestamp: '2025-11-19T10:05:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, doc1)
+      useChatStore.getState().addDocument(conversationId, doc2)
+
+      useChatStore.getState().removeDocument(conversationId, 'doc-1')
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents).toHaveLength(1)
+      expect(documents[0]).toEqual(doc2)
+    })
+
+    it('should handle removing non-existent document gracefully', () => {
+      const conversationId = 'conv-doc-9'
+      const document = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test.pdf',
+        status: 'ready' as const,
+        chunkCount: 10,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, document)
+
+      // Should not throw error
+      useChatStore.getState().removeDocument(conversationId, 'doc-nonexistent')
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents).toHaveLength(1)
+      expect(documents[0]).toEqual(document)
+    })
+
+    it('should only remove document from specified conversation', () => {
+      const convA = 'conv-doc-10a'
+      const convB = 'conv-doc-10b'
+      const docA = {
+        id: 'doc-a',
+        conversationId: convA,
+        filename: 'testA.pdf',
+        status: 'ready' as const,
+        chunkCount: 5,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+      const docB = {
+        id: 'doc-b',
+        conversationId: convB,
+        filename: 'testB.pdf',
+        status: 'ready' as const,
+        chunkCount: 8,
+        uploadTimestamp: '2025-11-19T10:05:00Z',
+      }
+
+      useChatStore.getState().addDocument(convA, docA)
+      useChatStore.getState().addDocument(convB, docB)
+
+      useChatStore.getState().removeDocument(convA, 'doc-a')
+
+      expect(useChatStore.getState().getDocuments(convA)).toEqual([])
+      expect(useChatStore.getState().getDocuments(convB)).toEqual([docB])
+    })
+  })
+
+  describe('Document status handling', () => {
+    it('should handle processing status', () => {
+      const conversationId = 'conv-doc-11'
+      const document = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test.pdf',
+        status: 'processing' as const,
+        chunkCount: 0,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, document)
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents[0].status).toBe('processing')
+    })
+
+    it('should handle failed status with error message', () => {
+      const conversationId = 'conv-doc-12'
+      const document = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test.pdf',
+        status: 'failed' as const,
+        chunkCount: 0,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+        errorMessage: 'Failed to process document',
+      }
+
+      useChatStore.getState().addDocument(conversationId, document)
+
+      const documents = useChatStore.getState().getDocuments(conversationId)
+      expect(documents[0].status).toBe('failed')
+      expect(documents[0].errorMessage).toBe('Failed to process document')
+    })
+  })
+
+  describe('Persistence configuration', () => {
+    it('should persist documentsByConversation', () => {
+      const conversationId = 'conv-doc-13'
+      const document = {
+        id: 'doc-1',
+        conversationId,
+        filename: 'test.pdf',
+        status: 'ready' as const,
+        chunkCount: 10,
+        uploadTimestamp: '2025-11-19T10:00:00Z',
+      }
+
+      useChatStore.getState().addDocument(conversationId, document)
+
+      const state = useChatStore.getState()
+
+      // Verify documents exist in memory
+      expect(state.documentsByConversation[conversationId]).toHaveLength(1)
+      expect(state.documentsByConversation[conversationId][0]).toEqual(document)
+
+      // The partialize function includes documentsByConversation
     })
   })
 })

@@ -1,61 +1,126 @@
 import asyncio
 import contextlib
 import json
-import sys
-from pathlib import Path
-from typing import List
+from contextlib import asynccontextmanager
 
 import torch
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, func
+from sqlalchemy import select
 
-BACKEND_ROOT = Path(__file__).resolve().parent.parent
-if str(BACKEND_ROOT) not in sys.path:
-    # Allow absolute `app.*` imports when executed via `fastapi dev app/main.py`.
-    sys.path.append(str(BACKEND_ROOT))
-
-from app.db.models import (
-    Client,
-    Message,
-    Conversation,
-    ModelConfig,
-    SystemPromptTemplate,
-)
-from app.db.session import async_session, init_models
-from app.db.conversation_helpers import (
+from .api.endpoints import clients, conversations, documents, models
+from .db.conversation_helpers import (
     get_or_create_default_conversation,
     update_conversation_access_time,
-    verify_conversation_belongs_to_client,
 )
-from app.schemas import (
-    ClientResponse,
-    ClientUpdate,
-    ConversationCreate,
-    ConversationUpdate,
-    ConversationResponse,
-    MessageResponse,
-    ConversationDetailResponse,
-    ModelConfigResponse,
-    SystemPromptTemplateResponse,
-)
-from app.model_utils import (
-    get_or_create_client,
-    persist_user_turn,
-    persist_assistant_turn,
+from .db.models import ModelConfig
+from .db.session import async_session, init_models
+from .services.model_utils import (
     AsyncQueueTextStreamer,
-    load_model,
-    get_generation_params,
     count_tokens_for_system_prompt,
     format_prompt,
+    format_prompt_with_rag,
+    get_generation_params,
+    get_or_create_client,
+    load_model,
+    persist_assistant_turn,
+    persist_user_turn,
 )
+from .rag.config import RAGConfig
+from .rag.embeddings import EmbeddingGenerator
+from .rag.retriever import RAGRetriever
+from .rag.vector_store import VectorStore
+from .services.document_service import check_conversation_has_documents
 
-app = FastAPI()
+# ... imports ...
+
+# Global RAG components (initialized at startup)
+rag_config: RAGConfig | None = None
+embedding_generator: EmbeddingGenerator | None = None
 
 
-@app.on_event("startup")
-async def ensure_database():
-    await init_models()
+async def init_rag_components():
+    """Initialize RAG components and return config and generator."""
+    try:
+        config = RAGConfig.from_env()
+        generator = None
+
+        if config.enabled:
+            print(f"\n{'=' * 60}")
+            print("🔄 Initializing RAG components...")
+            print(f"{'=' * 60}")
+            print(f"Embedding model: {config.embedding_model}")
+            print(f"Chunk size: {config.chunk_size}")
+            print(f"Top-k: {config.top_k}")
+            print(f"Min similarity: {config.min_similarity}")
+
+            # Initialize embedding generator (loads model)
+            # Run in thread pool to avoid blocking event loop
+            generator = await asyncio.to_thread(EmbeddingGenerator.get_instance, config)
+
+            print("✅ RAG components initialized successfully!")
+            print(f"{'=' * 60}\n")
+        else:
+            print("⚠️  RAG is disabled in configuration")
+
+        return config, generator
+    except Exception as e:
+        print(f"❌ Failed to initialize RAG components: {str(e)}")
+        print("⚠️  RAG functionality will be disabled")
+        return None, None
+
+
+async def warmup_model_task():
+    """Warm up the generator model."""
+    try:
+        print("🔥 Warming up default generator model...")
+        # Run in thread pool since loading model is CPU intensive and blocking
+        await asyncio.to_thread(load_model)
+        print("✅ Generator model warmed up!")
+    except Exception as e:
+        print(f"⚠️  Failed to warm up generator model: {str(e)}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for startup and shutdown events.
+    Handles database initialization, RAG setup, and model warmup in parallel.
+    """
+    # --- Startup ---
+    print("\n🚀 Starting up Baguettotron Backend...")
+
+    # Define tasks
+    tasks = [
+        init_models(),
+        init_rag_components(),
+        warmup_model_task(),
+    ]
+
+    # Run tasks concurrently
+    print("⏳ Running startup tasks in parallel...")
+    results = await asyncio.gather(*tasks)
+
+    # Unpack results
+    # init_models returns None
+    # init_rag_components returns (config, generator)
+    # warmup_model_task returns None
+
+    global rag_config, embedding_generator
+    rag_config, embedding_generator = results[1]
+
+    print("✨ All startup tasks completed!")
+
+    yield
+
+    # --- Shutdown ---
+    print("\n🛑 Shutting down Baguettotron Backend...")
+    # Cleanup resources if needed
+    # if embedding_generator:
+    #     embedding_generator.unload()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # Enable CORS for frontend
@@ -67,6 +132,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include Routers
+app.include_router(models.router)
+app.include_router(clients.router)
+app.include_router(conversations.router)
+app.include_router(documents.router)
+
 
 @app.get("/")
 async def root():
@@ -77,408 +148,8 @@ async def root():
 async def health_check():
     """Lightweight health check endpoint for initial connection verification."""
     from datetime import datetime, timezone
+
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
-
-
-# Public API Endpoints (no authentication required)
-
-
-@app.get("/api/models", response_model=List[ModelConfigResponse])
-async def list_models():
-    """Get all available models - public endpoint."""
-    try:
-        async with async_session() as session:
-            result = await session.execute(
-                select(ModelConfig).order_by(ModelConfig.display_name)
-            )
-            models = result.scalars().all()
-            return [
-                ModelConfigResponse(
-                    id=m.id,
-                    model_name=m.model_name,
-                    display_name=m.display_name,
-                    thinking_behavior=m.thinking_behavior,
-                    thinking_tags=m.thinking_tags,
-                    default_temperature=m.default_temperature,
-                    default_max_tokens=m.default_max_tokens,
-                    max_context_tokens=m.max_context_tokens,
-                    supports_system_prompt=m.supports_system_prompt,
-                )
-                for m in models
-            ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch models: {str(e)}")
-
-
-@app.get(
-    "/api/system-prompt-templates", response_model=List[SystemPromptTemplateResponse]
-)
-async def list_system_prompt_templates():
-    """Get all system prompt templates - public endpoint."""
-    try:
-        async with async_session() as session:
-            result = await session.execute(
-                select(SystemPromptTemplate).order_by(
-                    SystemPromptTemplate.is_default.desc(),
-                    SystemPromptTemplate.category,
-                    SystemPromptTemplate.name,
-                )
-            )
-            templates = result.scalars().all()
-            return [
-                SystemPromptTemplateResponse(
-                    id=t.id,
-                    name=t.name,
-                    description=t.description,
-                    content=t.content,
-                    is_default=t.is_default,
-                    category=t.category,
-                )
-                for t in templates
-            ]
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch templates: {str(e)}"
-        )
-
-
-# Client Settings API Endpoints
-
-
-@app.get("/api/clients/{client_id}", response_model=ClientResponse)
-async def get_client(client_id: str):
-    """Get client information including system prompt and generation parameters."""
-    try:
-        async with async_session() as session:
-            result = await session.execute(
-                select(Client).where(Client.fingerprint == client_id)
-            )
-            client = result.scalar_one_or_none()
-
-            if client is None:
-                raise HTTPException(status_code=404, detail="Client not found")
-
-            return ClientResponse(
-                id=client.id,
-                fingerprint=client.fingerprint,
-                system_prompt=client.system_prompt,
-                temperature=client.temperature,
-                top_p=client.top_p,
-                top_k=client.top_k,
-                repetition_penalty=client.repetition_penalty,
-                do_sample=client.do_sample,
-                max_tokens=client.max_tokens,
-                created_at=client.created_at.isoformat(),
-                updated_at=client.updated_at.isoformat(),
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-@app.patch("/api/clients/{client_id}", response_model=ClientResponse)
-async def update_client(client_id: str, client_data: ClientUpdate):
-    """Update client's system prompt and generation parameters."""
-    try:
-        # Validate system_prompt length if provided
-        if (
-            client_data.system_prompt is not None
-            and len(client_data.system_prompt) > 4000
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="System prompt exceeds maximum length of 4000 characters",
-            )
-
-        async with async_session() as session:
-            result = await session.execute(
-                select(Client).where(Client.fingerprint == client_id)
-            )
-            client = result.scalar_one_or_none()
-
-            if client is None:
-                raise HTTPException(status_code=404, detail="Client not found")
-
-            # Update system_prompt if provided
-            if client_data.system_prompt is not None:
-                client.system_prompt = client_data.system_prompt
-
-            # Update generation parameters if provided
-            if client_data.temperature is not None:
-                client.temperature = client_data.temperature
-            if client_data.top_p is not None:
-                client.top_p = client_data.top_p
-            if client_data.top_k is not None:
-                client.top_k = client_data.top_k
-            if client_data.repetition_penalty is not None:
-                client.repetition_penalty = client_data.repetition_penalty
-            if client_data.do_sample is not None:
-                client.do_sample = client_data.do_sample
-            if client_data.max_tokens is not None:
-                client.max_tokens = client_data.max_tokens
-
-            await session.commit()
-            await session.refresh(client)
-
-            return ClientResponse(
-                id=client.id,
-                fingerprint=client.fingerprint,
-                system_prompt=client.system_prompt,
-                temperature=client.temperature,
-                top_p=client.top_p,
-                top_k=client.top_k,
-                repetition_penalty=client.repetition_penalty,
-                do_sample=client.do_sample,
-                max_tokens=client.max_tokens,
-                created_at=client.created_at.isoformat(),
-                updated_at=client.updated_at.isoformat(),
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-# Conversation Management API Endpoints
-
-
-@app.get("/api/conversations", response_model=List[ConversationResponse])
-async def list_conversations(client_id: str = Query(...)):
-    """List all conversations for a client."""
-    try:
-        async with async_session() as session:
-            # Get or create client
-            client = await get_or_create_client(session, client_id)
-
-            # Fetch conversations with message count
-            result = await session.execute(
-                select(Conversation, func.count(Message.id).label("message_count"))
-                .outerjoin(Message, Message.conversation_id == Conversation.id)
-                .where(Conversation.client_id == client.id)
-                .group_by(Conversation.id)
-                .order_by(Conversation.last_accessed_at.desc())
-            )
-
-            conversations = []
-            for conversation, message_count in result.all():
-                conversations.append(
-                    ConversationResponse(
-                        id=conversation.id,
-                        title=conversation.title,
-                        created_at=conversation.created_at.isoformat(),
-                        updated_at=conversation.updated_at.isoformat(),
-                        last_accessed_at=conversation.last_accessed_at.isoformat(),
-                        message_count=message_count,
-                    )
-                )
-
-            return conversations
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-@app.post("/api/conversations", response_model=ConversationResponse)
-async def create_conversation(conversation_data: ConversationCreate):
-    """Create a new conversation."""
-    try:
-        async with async_session() as session:
-            # Get or create client
-            client = await get_or_create_client(session, conversation_data.client_id)
-
-            # Create new conversation with UUID from frontend
-            conversation = Conversation(
-                id=conversation_data.id,
-                client_id=client.id,
-                title=conversation_data.title,
-            )
-            session.add(conversation)
-            await session.commit()
-            await session.refresh(conversation)
-
-            return ConversationResponse(
-                id=conversation.id,
-                title=conversation.title,
-                created_at=conversation.created_at.isoformat(),
-                updated_at=conversation.updated_at.isoformat(),
-                last_accessed_at=conversation.last_accessed_at.isoformat(),
-                message_count=0,
-            )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-@app.get(
-    "/api/conversations/{conversation_id}", response_model=ConversationDetailResponse
-)
-async def get_conversation(conversation_id: str, client_id: str = Query(...)):
-    """Get conversation details with messages."""
-    try:
-        async with async_session() as session:
-            # Get or create client
-            client = await get_or_create_client(session, client_id)
-
-            # Fetch conversation
-            result = await session.execute(
-                select(Conversation).where(Conversation.id == conversation_id)
-            )
-            conversation = result.scalar_one_or_none()
-
-            if conversation is None:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-
-            # Verify ownership
-            if conversation.client_id != client.id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Conversation does not belong to this client",
-                )
-
-            # Fetch messages
-            messages_result = await session.execute(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(Message.created_at, Message.id)
-            )
-            messages = messages_result.scalars().all()
-
-            return ConversationDetailResponse(
-                id=conversation.id,
-                title=conversation.title,
-                created_at=conversation.created_at.isoformat(),
-                updated_at=conversation.updated_at.isoformat(),
-                last_accessed_at=conversation.last_accessed_at.isoformat(),
-                messages=[
-                    MessageResponse(
-                        role=msg.role,
-                        content=msg.content,
-                        thinking=msg.thinking,
-                        created_at=msg.created_at.isoformat(),
-                    )
-                    for msg in messages
-                ],
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-@app.patch("/api/conversations/{conversation_id}", response_model=ConversationResponse)
-async def update_conversation(
-    conversation_id: str,
-    conversation_data: ConversationUpdate,
-    client_id: str = Query(...),
-):
-    """Update conversation title."""
-    try:
-        async with async_session() as session:
-            # Get or create client
-            client = await get_or_create_client(session, client_id)
-
-            # Fetch conversation
-            result = await session.execute(
-                select(Conversation).where(Conversation.id == conversation_id)
-            )
-            conversation = result.scalar_one_or_none()
-
-            if conversation is None:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-
-            # Verify ownership
-            if conversation.client_id != client.id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Conversation does not belong to this client",
-                )
-
-            # Update title
-            conversation.title = conversation_data.title
-            await session.commit()
-            await session.refresh(conversation)
-
-            # Get message count
-            count_result = await session.execute(
-                select(func.count(Message.id)).where(
-                    Message.conversation_id == conversation_id
-                )
-            )
-            message_count = count_result.scalar()
-
-            return ConversationResponse(
-                id=conversation.id,
-                title=conversation.title,
-                created_at=conversation.created_at.isoformat(),
-                updated_at=conversation.updated_at.isoformat(),
-                last_accessed_at=conversation.last_accessed_at.isoformat(),
-                message_count=message_count,
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-@app.delete("/api/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str, client_id: str = Query(...)):
-    """Delete conversation and cascade delete messages."""
-    try:
-        async with async_session() as session:
-            # Get or create client
-            client = await get_or_create_client(session, client_id)
-
-            # Fetch conversation
-            result = await session.execute(
-                select(Conversation).where(Conversation.id == conversation_id)
-            )
-            conversation = result.scalar_one_or_none()
-
-            if conversation is None:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-
-            # Verify ownership
-            if conversation.client_id != client.id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Conversation does not belong to this client",
-                )
-
-            # Delete conversation (cascade will delete messages)
-            await session.delete(conversation)
-            await session.commit()
-
-            return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
-
-
-@app.post("/api/conversations/{conversation_id}/access")
-async def update_conversation_access(conversation_id: str, client_id: str = Query(...)):
-    """Update last_accessed_at timestamp."""
-    try:
-        async with async_session() as session:
-            # Get or create client
-            client = await get_or_create_client(session, client_id)
-
-            # Verify conversation exists and belongs to client
-            if not await verify_conversation_belongs_to_client(
-                session, conversation_id, client.id
-            ):
-                raise HTTPException(
-                    status_code=404,
-                    detail="Conversation not found or does not belong to this client",
-                )
-
-            # Update access time
-            await update_conversation_access_time(session, conversation_id)
-
-            return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
 
 
 @app.websocket("/ws/chat")
@@ -569,9 +240,92 @@ async def websocket_chat(websocket: WebSocket):
                     system_prompt_tokens,
                 )
 
-                prompt = format_prompt(
-                    conversation_history, thinking_mode, system_prompt
-                )
+                # RAG Integration: Check for documents and retrieve context
+                rag_context = None
+                print("\n[RAG] eligibility checkpoint")
+                print(f"   conversation_id={conversation_id}")
+                print(f"   rag_config_loaded={bool(rag_config)}")
+                print(f"   rag_enabled={rag_config.enabled if rag_config else False}")
+                print(f"   embedding_generator_ready={embedding_generator is not None}")
+                if rag_config and rag_config.enabled and embedding_generator:
+                    try:
+                        # Check if conversation has ready documents
+                        # Note: check_conversation_has_documents was moved to document_service, but I imported it from there?
+                        # Wait, I need to check where I imported it from.
+                        # In the original main.py it was defined there.
+                        # I should probably move it to document_service or keep it.
+                        # I imported it from app.services.document_service in the new main.py imports.
+                        # But wait, I didn't put it in document_service.py!
+                        # I only put process_document_background in document_service.py.
+                        # I need to add check_conversation_has_documents to document_service.py or keep it in main.py (but I prefer moving it).
+
+                        has_documents = await check_conversation_has_documents(
+                            session, conversation_id
+                        )
+                        print(f"   ready_documents_present={has_documents}")
+
+                        if has_documents:
+                            print(
+                                f"✅ RAG eligible: attempting retrieval for conversation {conversation_id}"
+                            )
+                            print(f"\n{'=' * 60}")
+                            print("📚 RAG: Documents found, retrieving context...")
+                            print(f"{'=' * 60}")
+
+                            # Initialize RAG retriever with current session
+                            vector_store = VectorStore(session)
+                            rag_retriever = RAGRetriever(
+                                embedding_generator, vector_store
+                            )
+
+                            # Retrieve relevant chunks
+                            rag_context = await rag_retriever.retrieve_context(
+                                query=user_message,
+                                conversation_id=conversation_id,
+                                top_k=rag_config.top_k,
+                                min_similarity=rag_config.min_similarity,
+                            )
+
+                            if rag_context:
+                                print(
+                                    f"✅ Retrieved {len(rag_context.chunks)} relevant chunks"
+                                )
+                                print(f"{'=' * 60}\n")
+                            else:
+                                print(
+                                    "⚠️  No relevant chunks found above similarity threshold"
+                                )
+                                print(f"{'=' * 60}\n")
+                        else:
+                            print(
+                                "🚫 RAG skipped: no ready documents for this conversation"
+                            )
+                    except Exception as e:
+                        print(f"⚠️  RAG retrieval error: {str(e)}")
+                        print("   Falling back to normal chat without RAG")
+                        rag_context = None
+                else:
+                    print(
+                        "🚫 RAG skipped before document check: missing config or embedding generator"
+                    )
+
+                # Construct prompt based on RAG availability
+                if rag_context:
+                    # RAG-enhanced prompt with sources
+                    # Remove current user message from history (it's in rag_context)
+                    history_without_current = conversation_history[:-1]
+                    prompt = format_prompt_with_rag(
+                        history_without_current,
+                        thinking_mode,
+                        system_prompt,
+                        rag_context.formatted_sources,
+                        user_message,
+                    )
+                else:
+                    # Normal prompt without RAG
+                    prompt = format_prompt(
+                        conversation_history, thinking_mode, system_prompt
+                    )
 
                 print("📝 Prompt construction parameters:")
                 print(f"  - thinking_mode: {thinking_mode}")
@@ -583,31 +337,27 @@ async def websocket_chat(websocket: WebSocket):
                 )
                 print(f"{'=' * 80}\n")
                 print("🧾 Full prompt delivered to model:")
-                print(prompt)
+                # print(prompt)
                 print(f"{'=' * 60}\n")
 
-                await websocket.send_json(
-                    {
-                        "type": "start",
-                        "model": model_name,
-                        "thinking_mode": thinking_mode,
-                        "conversation_id": conversation_id,
-                    }
-                )
+                await websocket.send_json({
+                    "type": "start",
+                    "model": model_name,
+                    "thinking_mode": thinking_mode,
+                    "conversation_id": conversation_id,
+                })
 
                 async def send_thinking_update(content: str, complete: bool = False):
                     # For "fixed" thinking models: always send (model always generates thinking)
                     # For "controllable" models: only send if thinking_mode is enabled
                     if thinking_behavior != "fixed" and not thinking_mode:
                         return
-                    await websocket.send_json(
-                        {
-                            "type": "thinking",
-                            "conversation_id": conversation_id,
-                            "content": content,
-                            "complete": complete,
-                        }
-                    )
+                    await websocket.send_json({
+                        "type": "thinking",
+                        "conversation_id": conversation_id,
+                        "content": content,
+                        "complete": complete,
+                    })
                     await asyncio.sleep(0)
 
                 loop = asyncio.get_running_loop()
@@ -620,12 +370,13 @@ async def websocket_chat(websocket: WebSocket):
                     skip_special_tokens=False,
                 )
 
+                model_device = model_data.get(
+                    "device", getattr(model, "device", torch.device("cpu"))
+                )
                 inputs = tokenizer(
                     prompt, return_tensors="pt", return_token_type_ids=False
                 )
-
-                if torch.cuda.is_available():
-                    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+                inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
                 # Get generation parameters from client settings with fallback to model config
                 gen_params = get_generation_params(client, model_config)
@@ -692,7 +443,7 @@ async def websocket_chat(websocket: WebSocket):
                     if not thinking_started:
                         print("💭 ", end="", flush=True)
                         thinking_started = True
-                    print(text, end="", flush=True)
+                    # print(text, end="", flush=True)
                     await send_thinking_update(thinking_content, complete=False)
 
                 async def finalize_thinking():
@@ -736,14 +487,12 @@ async def websocket_chat(websocket: WebSocket):
                             # All whitespace, skip displaying it but keep in response_content
                             return
 
-                    print(f"{display_text}", end="", flush=True)
-                    await websocket.send_json(
-                        {
-                            "type": "token",
-                            "conversation_id": conversation_id,
-                            "content": display_text,
-                        }
-                    )
+                    # print(f"{display_text}", end="", flush=True)
+                    await websocket.send_json({
+                        "type": "token",
+                        "conversation_id": conversation_id,
+                        "content": display_text,
+                    })
                     await asyncio.sleep(0)  # Yield to event loop to send immediately
 
                 print("🔄 Starting token stream...\n")
@@ -760,6 +509,29 @@ async def websocket_chat(websocket: WebSocket):
 
                         remaining = text
                         while remaining and not message_ended:
+                            # Defensive: stop if the model starts a new role turn mid-stream
+                            new_turn_indices = [
+                                idx
+                                for idx in [
+                                    remaining.find("<|im_start|>user"),
+                                    remaining.find("<|im_start|>assistant"),
+                                    remaining.find("<|im_start|>system"),
+                                ]
+                                if idx != -1
+                            ]
+                            next_new_turn = (
+                                min(new_turn_indices) if new_turn_indices else -1
+                            )
+                            if next_new_turn != -1:
+                                if next_new_turn > 0:
+                                    await emit_response_text(remaining[:next_new_turn])
+                                print(
+                                    "⚠️  Detected unexpected <|im_start|> role tag mid-stream; terminating response early."
+                                )
+                                message_ended = True
+                                remaining = ""
+                                break
+
                             # Skip thinking detection for "none" models
                             if thinking_behavior == "none":
                                 # Just emit everything as response
@@ -858,18 +630,15 @@ async def websocket_chat(websocket: WebSocket):
                         )
 
                         # Send reclassification signal to frontend
-                        await websocket.send_json(
-                            {
-                                "type": "reclassify_thinking_as_response",
-                                "conversation_id": conversation_id,
-                            }
-                        )
+                        await websocket.send_json({
+                            "type": "reclassify_thinking_as_response",
+                            "conversation_id": conversation_id,
+                        })
 
                         # Move thinking content to response content
                         response_content = thinking_content + response_content
                         thinking_content = ""
                         saved_thinking_content = ""
-
 
                     # Save thinking content only if we found a closing tag
                     # If no closing tag was found, everything is in response_content (after reclassification)
@@ -885,13 +654,11 @@ async def websocket_chat(websocket: WebSocket):
                         system_prompt_tokens,
                     )
 
-                    await websocket.send_json(
-                        {
-                            "type": "complete",
-                            "conversation_id": conversation_id,
-                            "full_response": response_content,
-                        }
-                    )
+                    await websocket.send_json({
+                        "type": "complete",
+                        "conversation_id": conversation_id,
+                        "full_response": response_content,
+                    })
                 finally:
                     streamer.close()
                     if not generation_task.done():

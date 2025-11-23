@@ -16,15 +16,17 @@ export interface MessageItemProps {
   readonly isStreamingMessage: boolean;
 }
 
+import { DocumentList } from "./DocumentList";
+
 export function UserMessageItem({
   message,
   messageIndex,
   shouldClampUser = false,
   ref,
 }: MessageItemProps & {
-    shouldClampUser?: boolean;
-    ref?: React.Ref<HTMLDivElement>;
-  }) {
+  shouldClampUser?: boolean;
+  ref?: React.Ref<HTMLDivElement>;
+}) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
 
@@ -49,7 +51,7 @@ export function UserMessageItem({
 
   return (
     <div
-     ref={ref}
+      ref={ref}
       className={"flex justify-end"}
       data-message-index={messageIndex}
       data-message-role={message.role}
@@ -57,7 +59,14 @@ export function UserMessageItem({
       data-response-message={undefined}
       data-user-expanded={shouldClampUser && isExpanded ? "true" : undefined}
     >
-      <div className="relative w-full max-w-3xl rounded-lg px-4 py-3 sm:px-6 sm:py-4 bg-[#03f3ef] text-slate-900">
+      <div className="relative w-full max-w-3xl rounded-2xl px-4 py-3 sm:px-6 sm:py-4 bg-[#03f3ef] text-slate-900">
+        {/* Attached Documents */}
+        {message.documents && message.documents.length > 0 && (
+          <div className="mb-3">
+            <DocumentList documents={message.documents} readonly />
+          </div>
+        )}
+
         {message.content && (
           <div
             ref={contentRef}
@@ -66,7 +75,7 @@ export function UserMessageItem({
               shouldClamp && "max-h-[12.5rem] overflow-hidden "
             )}
           >
-            <div className="prose prose-base prose-slate dark:prose-invert max-w-none">
+            <div className="prose prose-base prose-slate max-w-none">
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
                 {message.content}
               </ReactMarkdown>
@@ -76,26 +85,26 @@ export function UserMessageItem({
 
         {
           shouldClamp && (
-              <div
-            className={twJoin(
-              "pointer-events-none absolute bottom-0 left-0 right-0 h-12 ",
-              "bg-gradient-to-t from-[#03f3ef] to-transparent",
-              "flex items-end justify-center pb-2"
-            )}
-          >
-          </div>
+            <div
+              className={twJoin(
+                "pointer-events-none absolute bottom-0 left-0 right-0 h-12 ",
+                "bg-gradient-to-t from-[#03f3ef] to-transparent",
+                "flex items-end justify-center pb-2"
+              )}
+            >
+            </div>
           )
         }
 
         {isOverflowing && (
-          
-            <button
-              type="button"
-              className="pointer-events-auto rounded-full bg-white/90 px-4 py-1.5 text-xs font-semibold text-slate-900 shadow-sm transition hover:bg-white"
-              onClick={() => setIsExpanded((isExpanded) => !isExpanded)}
-            >
-              {isExpanded ? "Show less": "Show more" }             
-            </button>
+
+          <button
+            type="button"
+            className="pointer-events-auto rounded-full bg-white/90 px-4 py-1.5 text-xs font-semibold text-slate-900 shadow-sm transition hover:bg-white"
+            onClick={() => setIsExpanded((isExpanded) => !isExpanded)}
+          >
+            {isExpanded ? "Show less" : "Show more"}
+          </button>
         )}
       </div>
     </div>
@@ -109,9 +118,9 @@ export function AssistantMessageItem({
   isActiveResponse = false,
   ref,
 }: MessageItemProps & {
-    isActiveResponse?: boolean;
-    ref?: React.Ref<HTMLDivElement>;
-  }) {
+  isActiveResponse?: boolean;
+  ref?: React.Ref<HTMLDivElement>;
+}) {
   // Get current thinking mode setting from store
   const thinkingMode = useChatStore((state) => state.thinkingMode);
 
@@ -123,7 +132,7 @@ export function AssistantMessageItem({
 
   return (
     <div
-    ref={ref}
+      ref={ref}
       className={"flex justify-start"}
       data-message-index={messageIndex}
       data-message-role={message.role}
@@ -140,8 +149,8 @@ export function AssistantMessageItem({
         {/* Show thinking during streaming OR when thinking mode is enabled */}
         {shouldShowThinking && (
           <>
-           <ThinkingTrace streamingTrace={message.thinking || ""} isStreaming={isStreamingMessage} />
-         {/*  <details
+            <ThinkingTrace streamingTrace={message.thinking || ""} isStreaming={isStreamingMessage} />
+            {/*  <details
             className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 thinking-details"
             open={false}
           >
@@ -160,7 +169,7 @@ export function AssistantMessageItem({
              
             </div>
           </details> */}
-           </>
+          </>
         )}
 
         {(message.content || isStreamingMessage) && (
@@ -168,9 +177,9 @@ export function AssistantMessageItem({
             className={twJoin(
               "leading-relaxed text-base text-slate-800 dark:text-slate-100",
               message.thinking &&
-                message.content &&
-                !isStreamingMessage &&
-                "response-fade-in"
+              message.content &&
+              !isStreamingMessage &&
+              "response-fade-in"
             )}
           >
             {message.content ? (

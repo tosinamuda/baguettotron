@@ -138,3 +138,18 @@ class SystemPromptTemplateResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Document schemas
+class DocumentResponse(BaseModel):
+    id: str  # UUID
+    conversation_id: str
+    filename: str
+    status: str  # "processing" | "ready" | "failed"
+    chunk_count: int
+    upload_timestamp: str
+    error_message: str | None = None
+    sse_url: str | None = None
+
+    class Config:
+        from_attributes = True

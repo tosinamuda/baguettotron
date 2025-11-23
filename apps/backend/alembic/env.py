@@ -4,15 +4,17 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
+
+from ..app.db.config import SYNC_DATABASE_URL
+from ..app.db.models import Base
+
 project_root = Path(__file__).resolve().parents[1]
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from alembic import context
-from sqlalchemy import engine_from_config, pool
-
-from app.db.config import SYNC_DATABASE_URL
-from app.db.models import Base
 
 config = context.config
 

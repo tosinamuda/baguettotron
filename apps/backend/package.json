@@ -8,7 +8,7 @@
     "preinstall": "pip install --user uv; uv venv; uv sync",
     "lint": "uv run ruff check .",
     "lint:fix": "uv run ruff check . --fix",
-    "check-types": "echo 'true'"
+    "type-check": "uv run ruff check .; uvx pyrefly check --summarize-errors"
   },
   "keywords": [],
   "author": "",

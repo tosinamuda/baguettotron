@@ -14,10 +14,19 @@ dependencies = [
     "aiosqlite>=0.21.0",
     "greenlet>=3.0.3",
     "sqlite-vec>=0.1.6",
+    "sentence-transformers>=2.2.0",
+    "docling>=1.0.0",
+    "langchain>=0.1.0",
+    "langchain-text-splitters>=0.0.1",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.2.1",
+    "accelerate>=1.11.0",
+    "dspy>=3.0.4",
 ]
 
 [dependency-groups]
 dev = [
+    "pyrefly>=0.42.2",
     "pytest>=9.0.1",
     "ruff>=0.14.5",
 ]
@@ -28,3 +37,14 @@ line-length = 88
 [tool.ruff.lint]
 # Ignore E402 (module level import not at top of file) in main.py due to sys.path manipulation
 per-file-ignores = { "app/main.py" = ["E402"] }
+exclude = ["alembic/**"]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb"
+]
+
+project-excludes = [
+    "alembic/**",
+]

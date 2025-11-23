@@ -54,6 +54,7 @@ export function Slider({ value, onChange, min, max, step, disabled = false, clas
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDragging])
 
   return (

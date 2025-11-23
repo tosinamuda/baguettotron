@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useChatStore } from "../../../state/store/chatStore";
 import MessageWrapper from "./MessageWrapper";
+// import { DocumentList } from "./DocumentList";
 
 import {EMPTY_MESSAGES, MAX_USER_MESSAGE_HEIGHT} from "../constants"
 import { findActiveMessagePair  } from "../helper";
@@ -181,11 +182,14 @@ export default function ChatMessages({
       data-chat-messages="true"
     >
       <div className="mx-auto max-w-5xl px-4 sm:px-6 py-6">
+        {/* Document list removed from top - now shown in messages */}
+        {/* <DocumentList conversationId={conversationId} /> */}
+
         {/* Skeleton UI when fetching and no messages exist */}
         {displayMessages.length === 0 && isFetching && (
           <div className="space-y-6">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="flex justify-start">
+              <div key={`skeleton-${i}`} className="flex justify-start">
                 <div className="w-full max-w-3xl rounded-lg bg-white shadow-sm dark:bg-slate-800 px-4 py-3 sm:px-6 sm:py-4">
                   <div className="space-y-3">
                     <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded animate-pulse w-3/4"></div>
@@ -216,7 +220,7 @@ export default function ChatMessages({
           <div className="space-y-6">
             {displayMessages.map((message, index) => (
               <MessageWrapper
-                key={`${conversationId}-${index}`}
+                key={`${conversationId}-${message.role}-${index}-${message.content.slice(0, 20)}`}
                 message={message}
                 index={index}
                 displayMessages={displayMessages} // ← Pass full array
